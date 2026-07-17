@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Valcorvo — Test de terreno y casas</title>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#000; touch-action:none; }
+  canvas { display:block; }
+  #hud {
+    position:fixed; top:10px; left:10px; color:#ccc; font-family:monospace;
+    font-size:12px; background:rgba(0,0,0,0.5); padding:8px 10px; border-radius:6px;
+    pointer-events:none; line-height:1.5; z-index:10;
+  }
+  #hud b { color:#fff; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div><b>Valcorvo · prueba</b></div>
+  <div>Arrastrar: mirar alrededor</div>
+  <div>Pellizcar: zoom</div>
+</div>
+
+<div id="error-box" style="display:none; position:fixed; top:0; left:0; right:0; background:#8b0000; color:#fff; font-family:monospace; font-size:13px; padding:12px; z-index:999; white-space:pre-wrap; max-height:80vh; overflow:auto;"></div>
+
+<script>
+  window.addEventListener('error', function(e) {
+    const box = document.getElementById('error-box');
+    box.style.display = 'block';
+    box.textContent += 'ERROR: ' + e.message + '\n(línea ' + e.lineno + ')\n\n';
+  });
+  window.addEventListener('unhandledrejection', function(e) {
+    const box = document.getElementById('error-box');
+    box.style.display = 'block';
+    box.textContent += 'PROMISE ERROR: ' + e.reason + '\n\n';
+  });
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+if (typeof THREE === 'undefined') {
+  document.getElementById('error-box').style.display = 'block';
+  document.getElementById('error-box').textContent = 'ERROR: Three.js no se pudo cargar desde el CDN. Revisa tu conexión a internet o el bloqueador de scripts.';
+} else {
+
+let scene, camera, renderer;
+let target = new THREE.Vector3(0, 2, 0);
+let radius = 22, theta = Math.PI * 0.25, phi = Math.PI * 0.35;
+
+init();
+animate();
+
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1d24);
+  scene.fog = new THREE.Fog(0x1a1d24, 15, 55);
+
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  document.body.appendChild(renderer.domElement);
+
+  buildTerrain();
+  buildLighting();
+
+  // Casa 1: normal, tranquila
+  buildHouse(-7, 0, { broken: false });
+
+  // Casa 2: clon con ventanas rotas y atmósfera hostil
+  buildHouse(7, 0, { broken: true });
+
+  buildTrees();
+  buildLeafParticles();
+
+  updateCamera();
+  setupTouchControls();
+  window.addEventListener('resize', onResize);
+}
+
+function buildTerrain() {
+  const groundGeo = new THREE.PlaneGeometry(80, 80, 40, 40);
+  groundGeo.rotateX(-Math.PI / 2);
+  // pequeñas irregularidades para que no sea un plano perfecto
+  const pos = groundGeo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const y = (Math.random() - 0.5) * 0.15;
+    pos.setY(i, y);
+  }
+  groundGeo.computeVertexNormals();
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0x3a3f33, roughness: 1 });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  const grid = new THREE.GridHelper(80, 40, 0x555555, 0x2a2a2a);
+  grid.position.y = 0.02;
+  scene.add(grid);
+}
+
+function buildLighting() {
+  const ambient = new THREE.AmbientLight(0x556070, 0.6);
+  scene.add(ambient);
+
+  const moon = new THREE.DirectionalLight(0x8fa5c0, 0.8);
+  moon.position.set(-10, 20, 10);
+  moon.castShadow = true;
+  moon.shadow.mapSize.set(1024, 1024);
+  scene.add(moon);
+
+  // luz inestable/hostil cerca de la casa 2
+  const flicker = new THREE.PointLight(0xff3b1f, 1.2, 12, 2);
+  flicker.position.set(7, 3, 3);
+  scene.add(flicker);
+  flicker.userData.baseIntensity = 1.2;
+  flicker.userData.isFlicker = true;
+  scene.userData.flickerLight = flicker;
+}
+
+function buildHouse(x, z, opts) {
+  const group = new THREE.Group();
+  group.position.set(x, 0, z);
+
+  const wallColor = opts.broken ? 0x5c4a44 : 0x8a7460;
+  const wallMat = new THREE.MeshStandardMaterial({ color: wallColor, roughness: 0.9 });
+  const walls = new THREE.Mesh(new THREE.BoxGeometry(6, 4, 5), wallMat);
+  walls.position.y = 2;
+  walls.castShadow = true;
+  walls.receiveShadow = true;
+  group.add(walls);
+
+  const roofColor = opts.broken ? 0x2b2320 : 0x4a3226;
+  const roofMat = new THREE.MeshStandardMaterial({ color: roofColor, roughness: 1 });
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(4.5, 2.2, 4), roofMat);
+  roof.rotation.y = Math.PI / 4;
+  roof.position.y = 5.1;
+  roof.castShadow = true;
+  group.add(roof);
+
+  // puerta
+  const doorMat = new THREE.MeshStandardMaterial({ color: opts.broken ? 0x1c1614 : 0x3b2a1e, roughness: 1 });
+  const door = new THREE.Mesh(new THREE.BoxGeometry(1, 2.2, 0.15), doorMat);
+  door.position.set(0, 1.1, 2.53);
+  group.add(door);
+
+  // ventanas
+  const windowPositions = [
+    [-1.8, 2.4, 2.53],
+    [1.8, 2.4, 2.53],
+    [2.53, 2.4, -1.5],
+    [-2.53, 2.4, -1.5]
+  ];
+  windowPositions.forEach(([wx, wy, wz], i) => {
+    const win = opts.broken ? buildBrokenWindow() : buildWindow();
+    win.position.set(wx, wy, wz);
+    if (Math.abs(wz) < Math.abs(wx) && i >= 2) win.rotation.y = Math.PI / 2;
+    group.add(win);
+  });
+
+  scene.add(group);
+  return group;
+}
+
+function buildWindow() {
+  const g = new THREE.Group();
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(1.1, 1.1, 0.1),
+    new THREE.MeshStandardMaterial({ color: 0x2e2117 })
+  );
+  g.add(frame);
+  const glass = new THREE.Mesh(
+    new THREE.BoxGeometry(0.9, 0.9, 0.05),
+    new THREE.MeshStandardMaterial({ color: 0xffdd88, emissive: 0xffcc55, emissiveIntensity: 0.5, transparent: true, opacity: 0.85 })
+  );
+  glass.position.z = 0.06;
+  g.add(glass);
+  return g;
+}
+
+function buildBrokenWindow() {
+  const g = new THREE.Group();
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(1.1, 1.1, 0.1),
+    new THREE.MeshStandardMaterial({ color: 0x1a1310 })
+  );
+  g.add(frame);
+
+  // vidrio roto: varios triángulos irregulares en vez de un panel entero,
+  // con huecos oscuros que dejan ver "adentro"
+  const shardMat = new THREE.MeshStandardMaterial({
+    color: 0x33251f, roughness: 0.3, metalness: 0.1,
+    emissive: 0x220a05, emissiveIntensity: 0.3, side: THREE.DoubleSide
+  });
+  const shardCount = 5;
+  for (let i = 0; i < shardCount; i++) {
+    const shape = new THREE.Shape();
+    const cx = (Math.random() - 0.5) * 0.7;
+    const cy = (Math.random() - 0.5) * 0.7;
+    shape.moveTo(cx, cy);
+    shape.lineTo(cx + (Math.random() - 0.5) * 0.5, cy + (Math.random() - 0.5) * 0.5);
+    shape.lineTo(cx + (Math.random() - 0.5) * 0.5, cy + (Math.random() - 0.5) * 0.5);
+    shape.closePath();
+    const geo = new THREE.ShapeGeometry(shape);
+    const shard = new THREE.Mesh(geo, shardMat);
+    shard.position.z = 0.05 + Math.random() * 0.02;
+    shard.rotation.z = Math.random() * Math.PI;
+    g.add(shard);
+  }
+
+  // una luz débil y roja "detrás" de la ventana rota, como si algo hubiera adentro
+  const innerGlow = new THREE.PointLight(0xff2200, 0.4, 2);
+  innerGlow.position.z = -0.3;
+  g.add(innerGlow);
+
+  return g;
+}
+
+function buildTrees() {
+  scene.userData.trees = [];
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3d2a1e, roughness: 1 });
+  const leafMatCalm = new THREE.MeshStandardMaterial({ color: 0x4d6b3a, roughness: 0.9 });
+  const leafMatHostile = new THREE.MeshStandardMaterial({ color: 0x38402c, roughness: 1 });
+
+  const spots = [
+    [-12, -4, false], [-3, 5, false], [-13, 6, false],
+    [11, -5, true], [4, 6, true], [13, 5, true]
+  ];
+
+  spots.forEach(([x, z, hostile]) => {
+    const tree = new THREE.Group();
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.22, 2.2, 6), trunkMat);
+    trunk.position.y = 1.1;
+    trunk.castShadow = true;
+    tree.add(trunk);
+
+    const leaves = new THREE.Group();
+    const leafMat = hostile ? leafMatHostile : leafMatCalm;
+    for (let i = 0; i < 3; i++) {
+      const blob = new THREE.Mesh(new THREE.IcosahedronGeometry(0.9 - i * 0.15, 0), leafMat);
+      blob.position.set((Math.random() - 0.5) * 0.6, 2.3 + i * 0.6, (Math.random() - 0.5) * 0.6);
+      blob.castShadow = true;
+      leaves.add(blob);
+    }
+    tree.add(leaves);
+    tree.position.set(x, 0, z);
+    tree.userData.leaves = leaves;
+    tree.userData.phase = Math.random() * Math.PI * 2;
+    tree.userData.strength = hostile ? 0.09 : 0.05; // el viento hostil sacude más brusco
+    scene.add(tree);
+    scene.userData.trees.push(tree);
+  });
+}
+
+function buildLeafParticles() {
+  const count = 60;
+  const geo = new THREE.PlaneGeometry(0.12, 0.12);
+  const mat = new THREE.MeshStandardMaterial({ color: 0x6b7a45, side: THREE.DoubleSide, roughness: 1 });
+  const leaves = new THREE.InstancedMesh(geo, mat, count);
+  const data = [];
+  for (let i = 0; i < count; i++) {
+    data.push({
+      x: (Math.random() - 0.5) * 40,
+      y: Math.random() * 4 + 0.3,
+      z: (Math.random() - 0.5) * 40,
+      speed: 0.6 + Math.random() * 0.8,
+      drift: Math.random() * Math.PI * 2,
+      spin: Math.random() * Math.PI * 2
+    });
+  }
+  scene.add(leaves);
+  scene.userData.leafParticles = { mesh: leaves, data };
+}
+
+function setupTouchControls() {
+  let dragging = false, lastX = 0, lastY = 0;
+  let pinchDist = null;
+
+  renderer.domElement.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 1) {
+      dragging = true;
+      lastX = e.touches[0].clientX;
+      lastY = e.touches[0].clientY;
+    } else if (e.touches.length === 2) {
+      dragging = false;
+      pinchDist = getPinchDist(e);
+    }
+  }, { passive: true });
+
+  renderer.domElement.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 1 && dragging) {
+      const dx = e.touches[0].clientX - lastX;
+      const dy = e.touches[0].clientY - lastY;
+      theta -= dx * 0.005;
+      phi = Math.max(0.15, Math.min(1.4, phi - dy * 0.005));
+      lastX = e.touches[0].clientX;
+      lastY = e.touches[0].clientY;
+      updateCamera();
+    } else if (e.touches.length === 2) {
+      const newDist = getPinchDist(e);
+      if (pinchDist) {
+        radius = Math.max(6, Math.min(45, radius - (newDist - pinchDist) * 0.03));
+        updateCamera();
+      }
+      pinchDist = newDist;
+    }
+  }, { passive: true });
+
+  renderer.domElement.addEventListener('touchend', () => { dragging = false; pinchDist = null; }, { passive: true });
+
+  // fallback mouse (para probar en PC también)
+  let mouseDown = false;
+  renderer.domElement.addEventListener('mousedown', (e) => { mouseDown = true; lastX = e.clientX; lastY = e.clientY; });
+  window.addEventListener('mouseup', () => mouseDown = false);
+  window.addEventListener('mousemove', (e) => {
+    if (!mouseDown) return;
+    theta -= (e.clientX - lastX) * 0.005;
+    phi = Math.max(0.15, Math.min(1.4, phi - (e.clientY - lastY) * 0.005));
+    lastX = e.clientX; lastY = e.clientY;
+    updateCamera();
+  });
+  renderer.domElement.addEventListener('wheel', (e) => {
+    radius = Math.max(6, Math.min(45, radius + e.deltaY * 0.02));
+    updateCamera();
+  });
+}
+
+function getPinchDist(e) {
+  const dx = e.touches[0].clientX - e.touches[1].clientX;
+  const dy = e.touches[0].clientY - e.touches[1].clientY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function updateCamera() {
+  camera.position.x = target.x + radius * Math.sin(phi) * Math.sin(theta);
+  camera.position.y = target.y + radius * Math.cos(phi);
+  camera.position.z = target.z + radius * Math.sin(phi) * Math.cos(theta);
+  camera.lookAt(target);
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+const dummy = new THREE.Object3D();
+let t = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  t += 0.05;
+
+  const fl = scene.userData.flickerLight;
+  if (fl) {
+    // parpadeo irregular, no una onda senoidal prolija: se siente más "roto"
+    fl.intensity = fl.userData.baseIntensity * (0.5 + Math.random() * 0.7) * (Math.sin(t) > -0.8 ? 1 : 0.1);
+  }
+
+  // brisa: cada árbol mece sus hojas con su propia fase, no todos igual
+  (scene.userData.trees || []).forEach(tree => {
+    const s = tree.userData.strength;
+    const p = tree.userData.phase;
+    tree.userData.leaves.rotation.z = Math.sin(t * 1.3 + p) * s;
+    tree.userData.leaves.rotation.x = Math.sin(t * 0.9 + p * 1.7) * s * 0.6;
+  });
+
+  // hojas sueltas arrastradas por el viento, caen y se reciclan arriba
+  const lp = scene.userData.leafParticles;
+  if (lp) {
+    lp.data.forEach((d, i) => {
+      d.x += Math.sin(t * 0.4 + d.drift) * 0.01 + 0.02; // deriva lateral + viento constante
+      d.y -= d.speed * 0.01;
+      d.spin += 0.03;
+      if (d.y < 0.1) { d.y = 4 + Math.random() * 1.5; d.x = (Math.random() - 0.5) * 40; }
+      if (d.x > 20) d.x = -20;
+      dummy.position.set(d.x, d.y, d.z);
+      dummy.rotation.set(d.spin * 0.5, d.spin, d.spin * 0.3);
+      dummy.updateMatrix();
+      lp.mesh.setMatrixAt(i, dummy.matrix);
+    });
+    lp.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  renderer.render(scene, camera);
+}
+} // fin del chequeo de THREE
+</script>
+</body>
+</html>
